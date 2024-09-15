@@ -9,6 +9,7 @@ espressoCore = "3.6.1"
 lifecycleRuntimeKtx = "2.8.5"
 activityCompose = "1.8.0"
 composeBom = "2024.04.01"
+materialIconsExtended = "1.7.1"
 objectDetection = "17.0.2"
 uiToolingPreview = "1.7.1"
 
@@ -21,6 +22,8 @@ androidx-camera-mlkit-vision = { module = "androidx.camera:camera-mlkit-vision",
 androidx-camera-video = { module = "androidx.camera:camera-video", version.ref = "cameraCore" }
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "cameraCore" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycleRuntimeKtx" }
+androidx-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
