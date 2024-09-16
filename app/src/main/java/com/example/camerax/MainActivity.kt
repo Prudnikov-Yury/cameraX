@@ -7,6 +7,8 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,13 +16,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview.Builder
 import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.mlkit.vision.MlKitAnalyzer
+import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,9 +53,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,17 +63,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.camerax.ui.theme.CameraXTheme
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -83,10 +95,18 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val scaffoldState = rememberBottomSheetScaffoldState()
                 var isCameraStarted by remember { mutableStateOf(false) }
-                var lens by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
-                val imageCapture = remember { ImageCapture.Builder().build() }
-                val useCases = remember { arrayOf(imageCapture) }
+                val detectedBarcode = remember { mutableStateOf<Barcode?>(null) }
 
+
+                val cameraController = remember {
+                    LifecycleCameraController(applicationContext)
+                        .configure(
+                            applicationContext,
+                            onBarcodeDetected = {
+                                detectedBarcode.value = it
+                            }
+                        )
+                }
 
                 val launcher =
                     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -96,6 +116,7 @@ class MainActivity : ComponentActivity() {
                             Log.d("MainActivity", "camera permission denied")
                         }
                     }
+
 
                 BottomSheetScaffold(
                     scaffoldState = scaffoldState,
@@ -121,11 +142,11 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         Camera(
+                            cameraController = cameraController,
                             paddingValues = innerPadding,
-                            cameraSelector = lens,
-                            useCases = useCases,
                             onChangeCamera = {
-                                lens = switchLens(lens)
+                                cameraController.cameraSelector =
+                                    switchLens(cameraController.cameraSelector)
                             },
                             onGalleryClick = {
                                 scope.launch {
@@ -134,13 +155,14 @@ class MainActivity : ComponentActivity() {
                             },
                             onTakePhoto = {
                                 takePhoto(
-                                    imageCapture,
+                                    cameraController,
                                     onPhotoTaken = viewModel::onTakePhoto
                                 )
                             }
                         )
-                    }
 
+                        DetectedBarcodes(barcode = detectedBarcode)
+                    }
                 }
 
                 BackHandler { isCameraStarted = false }
@@ -148,28 +170,59 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun LifecycleCameraController.configure(
+        context: Context,
+        onBarcodeDetected: (Barcode?) -> Unit
+    ): LifecycleCameraController {
+        return apply {
+            imageAnalysisBackpressureStrategy = ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
+
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
+                .build()
+
+            val barcodeScanner = BarcodeScanning.getClient(options)
+
+            setImageAnalysisAnalyzer(
+                ContextCompat.getMainExecutor(context),
+                MlKitAnalyzer(
+                    listOf(barcodeScanner),
+                    ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
+                    ContextCompat.getMainExecutor(context)
+                ) { result: MlKitAnalyzer.Result? ->
+
+
+                    val barcodeResults = result?.getValue(barcodeScanner)
+                    if ((barcodeResults == null) ||
+                        (barcodeResults.size == 0) ||
+                        (barcodeResults.first() == null)
+                    ) {
+                        onBarcodeDetected(null)
+                        return@MlKitAnalyzer
+                    }
+                    onBarcodeDetected(barcodeResults[0])
+                }
+            )
+        }
+    }
+
     @Composable
     private fun Camera(
+        cameraController: LifecycleCameraController,
         paddingValues: PaddingValues,
-        cameraSelector: Int,
-        vararg useCases: UseCase?,
         onChangeCamera: () -> Unit,
         onGalleryClick: () -> Unit,
         onTakePhoto: () -> Unit
     ) {
-        val lifecycleOwner = LocalLifecycleOwner.current
-        val context = LocalContext.current
-        val previewView: PreviewView = remember { PreviewView(this) }
 
-        remember(key1 = cameraSelector) {
-            ProcessCameraProvider.getInstance(this)
-                .configureCamera(
-                    previewView = previewView,
-                    lifecycleOwner = lifecycleOwner,
-                    cameraSelector = cameraSelector,
-                    context = context,
-                    useCases = useCases
-                )
+        val previewView: PreviewView = remember {
+            PreviewView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                scaleType = PreviewView.ScaleType.FILL_START
+                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                this.controller = cameraController
+                cameraController.bindToLifecycle(this@MainActivity)
+            }
         }
 
         CameraContent(
@@ -235,13 +288,13 @@ class MainActivity : ComponentActivity() {
             IconButton(onClick = onGalleryClick) {
                 Icon(
                     imageVector = Icons.Default.Photo,
-                    contentDescription = "Open gallery"
+                    contentDescription = null
                 )
             }
             IconButton(onClick = onTakePhoto) {
                 Icon(
                     imageVector = Icons.Default.PhotoCamera,
-                    contentDescription = "Take photo"
+                    contentDescription = null
                 )
             }
         }
@@ -249,10 +302,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takePhoto(
-        imageCapture: ImageCapture,
+        cameraController: LifecycleCameraController,
         onPhotoTaken: (Bitmap) -> Unit
     ) {
-        imageCapture.takePicture(
+        cameraController.takePicture(
             ContextCompat.getMainExecutor(applicationContext),
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
@@ -283,12 +336,9 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun switchLens(lens: Int) = if (CameraSelector.LENS_FACING_FRONT == lens) {
-        CameraSelector.LENS_FACING_BACK
-    } else {
-        CameraSelector.LENS_FACING_FRONT
-    }
-
+    private fun switchLens(lens: CameraSelector) = if (lens == CameraSelector.DEFAULT_BACK_CAMERA) {
+        CameraSelector.DEFAULT_FRONT_CAMERA
+    } else CameraSelector.DEFAULT_BACK_CAMERA
 
     private fun permissionGranted(): Boolean {
         return ContextCompat.checkSelfPermission(
@@ -304,7 +354,8 @@ private fun ListenableFuture<ProcessCameraProvider>.configureCamera(
     lifecycleOwner: LifecycleOwner,
     cameraSelector: Int,
     context: Context,
-    vararg useCases: UseCase?
+    vararg useCases: UseCase?,
+    onBarcodeDetected: (String) -> Unit
 ): ListenableFuture<ProcessCameraProvider> {
     addListener(
         {
@@ -314,19 +365,87 @@ private fun ListenableFuture<ProcessCameraProvider>.configureCamera(
                     surfaceProvider = previewView.surfaceProvider
                 }
 
+            val analysis = bindAnalysisUseCase(context, onBarcodeDetected)
+
             get().apply {
                 unbindAll()
                 bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.Builder().requireLensFacing(cameraSelector).build(),
                     preview,
-                    *useCases
+                    *useCases,
+                    analysis
                 )
             }
 
         }, ContextCompat.getMainExecutor(context)
     )
     return this
+}
+
+fun bindAnalysisUseCase(
+    context: Context,
+    onBarcodeDetected: (String) -> Unit
+): ImageAnalysis {
+    val imageAnalysis = ImageAnalysis.Builder()
+        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        .build()
+
+    imageAnalysis.setAnalyzer(
+        ContextCompat.getMainExecutor(context)
+    ) { imageProxy ->
+
+        val image = imageProxy.image
+        if (image != null) {
+
+            val inputImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
+
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
+                .build()
+
+            val scanner = BarcodeScanning.getClient(options)
+
+            scanner.process(inputImage)
+                .addOnSuccessListener { barcodes ->
+                    for (barcode: Barcode in barcodes) {
+                        onBarcodeDetected(barcode.rawValue ?: "No barcode")
+                        Log.d("onBarcodeDetected", "bindAnalysisUseCase: ${barcode.rawValue}")
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Log.e("MainActivity", "Barcode scanning failed: ${e.message}", e)
+                }
+        }
+        imageProxy.close()
+    }
+
+    return imageAnalysis
+}
+
+@Composable
+fun DetectedBarcodes(
+    barcode: State<Barcode?>
+) {
+    if (barcode.value == null) return
+
+    Canvas(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        drawRect(
+            color = Color.Cyan,
+            style = Stroke(2.dp.toPx()),
+            topLeft = Offset(
+                barcode.value?.boundingBox?.left?.toFloat() ?: 0f,
+                barcode.value?.boundingBox?.top?.toFloat() ?: 0f,
+            ),
+            size = Size(
+                barcode.value?.boundingBox?.width()?.toFloat() ?: 0f,
+                barcode.value?.boundingBox?.height()?.toFloat() ?: 0f
+            )
+        )
+    }
+
 }
 
 @Composable
