@@ -79,5 +79,7 @@ dependencies {
     implementation(libs.androidx.camera.extensions)
     implementation(libs.detection)
     implementation(libs.ui.tooling.preview)
-    implementation("com.google.mlkit:barcode-scanning:17.0.2")
+    implementation(libs.barcode.scanning)
+    implementation(libs.face.detection)
+    implementation(libs.play.services.mlkit.face.detection)
 }

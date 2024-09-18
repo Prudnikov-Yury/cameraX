@@ -3,10 +3,12 @@ package com.example.camerax
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Resources.Theme
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
@@ -21,26 +23,21 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview.Builder
-import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.mlkit.vision.MlKitAnalyzer
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Photo
@@ -50,10 +47,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,51 +59,32 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.camerax.ui.theme.CameraXTheme
+import com.google.android.gms.tasks.TaskExecutors
 import com.google.common.util.concurrent.ListenableFuture
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
-import kotlinx.coroutines.launch
+import com.google.mlkit.common.MlKitException
+import com.google.mlkit.vision.face.Face
 
 class MainActivity : ComponentActivity() {
 
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             CameraXTheme {
-                val viewModel = viewModel<MainViewModel>()
-                val bitmaps by viewModel.bitmaps.collectAsState()
-                val scope = rememberCoroutineScope()
-                val scaffoldState = rememberBottomSheetScaffoldState()
                 var isCameraStarted by remember { mutableStateOf(false) }
-                val detectedBarcode = remember { mutableStateOf<Barcode?>(null) }
-
-
-                val cameraController = remember {
-                    LifecycleCameraController(applicationContext)
-                        .configure(
-                            applicationContext,
-                            onBarcodeDetected = {
-                                detectedBarcode.value = it
-                            }
-                        )
-                }
+                var lens by remember { androidx.compose.runtime.mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
 
                 val launcher =
                     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -118,227 +96,79 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                BottomSheetScaffold(
-                    scaffoldState = scaffoldState,
-                    sheetPeekHeight = 0.dp,
-                    sheetContent = {
-                        BottomSheetContent(
-                            bitmaps = bitmaps,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                ) { innerPadding ->
-
+                Surface(color = MaterialTheme.colorScheme.background) {
                     if (!isCameraStarted) {
-                        StartCameraButton(
-                            modifier = Modifier.padding(innerPadding),
-                            onStartCameraClick = {
-                                if (!permissionGranted()) {
-                                    launcher.launch(Manifest.permission.CAMERA)
-                                } else {
-                                    isCameraStarted = true
-                                }
+                        StartCameraButton {
+                            if (!permissionGranted()) {
+                                launcher.launch(Manifest.permission.CAMERA)
+                            } else {
+                                isCameraStarted = true
                             }
-                        )
+                        }
                     } else {
-                        Camera(
-                            cameraController = cameraController,
-                            paddingValues = innerPadding,
-                            onChangeCamera = {
-                                cameraController.cameraSelector =
-                                    switchLens(cameraController.cameraSelector)
-                            },
-                            onGalleryClick = {
-                                scope.launch {
-                                    scaffoldState.bottomSheetState.expand()
-                                }
-                            },
-                            onTakePhoto = {
-                                takePhoto(
-                                    cameraController,
-                                    onPhotoTaken = viewModel::onTakePhoto
-                                )
-                            }
+                        CameraPreview(
+                            cameraLens = lens
                         )
-
-                        DetectedBarcodes(barcode = detectedBarcode)
+                        Controls(
+                            onLensChange = { lens = switchLens(lens) }
+                        )
                     }
-                }
 
-                BackHandler { isCameraStarted = false }
+                }
             }
         }
     }
 
-    private fun LifecycleCameraController.configure(
-        context: Context,
-        onBarcodeDetected: (Barcode?) -> Unit
-    ): LifecycleCameraController {
-        return apply {
-            imageAnalysisBackpressureStrategy = ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
-
-            val options = BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
-                .build()
-
-            val barcodeScanner = BarcodeScanning.getClient(options)
-
-            setImageAnalysisAnalyzer(
-                ContextCompat.getMainExecutor(context),
-                MlKitAnalyzer(
-                    listOf(barcodeScanner),
-                    ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
-                    ContextCompat.getMainExecutor(context)
-                ) { result: MlKitAnalyzer.Result? ->
-
-
-                    val barcodeResults = result?.getValue(barcodeScanner)
-                    if ((barcodeResults == null) ||
-                        (barcodeResults.size == 0) ||
-                        (barcodeResults.first() == null)
-                    ) {
-                        onBarcodeDetected(null)
-                        return@MlKitAnalyzer
-                    }
-                    onBarcodeDetected(barcodeResults[0])
-                }
-            )
-        }
-    }
-
     @Composable
-    private fun Camera(
-        cameraController: LifecycleCameraController,
-        paddingValues: PaddingValues,
-        onChangeCamera: () -> Unit,
-        onGalleryClick: () -> Unit,
-        onTakePhoto: () -> Unit
+    fun CameraPreview(
+        cameraLens: Int
     ) {
+        val lifecycleOwner = LocalLifecycleOwner.current
+        val context = LocalContext.current
+        var sourceInfo by remember { mutableStateOf(SourceInfo(10, 10, false)) }
+        var detectedFaces by remember { mutableStateOf<List<Face>>(emptyList()) }
+        val previewView = remember { PreviewView(context) }
 
-        val previewView: PreviewView = remember {
-            PreviewView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-                scaleType = PreviewView.ScaleType.FILL_START
-                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                this.controller = cameraController
-                cameraController.bindToLifecycle(this@MainActivity)
-            }
-        }
-
-        CameraContent(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            previewView = previewView,
-            onChangeCamera = onChangeCamera,
-            onGalleryClick = onGalleryClick,
-            onTakePhoto = onTakePhoto
-        )
-    }
-
-    @Composable
-    fun CameraContent(
-        modifier: Modifier = Modifier,
-        previewView: PreviewView,
-        onChangeCamera: () -> Unit,
-        onGalleryClick: () -> Unit,
-        onTakePhoto: () -> Unit
-    ) {
-
-        Box(modifier = modifier) {
-            AndroidView(
-                factory = {
-                    previewView
-                }
-            )
-
-            Controls(
-                onChangeCamera = onChangeCamera,
-                onGalleryClick = onGalleryClick,
-                onTakePhoto = onTakePhoto
-            )
-        }
-
-    }
-
-    @Composable
-    fun BoxScope.Controls(
-        onChangeCamera: () -> Unit,
-        onGalleryClick: () -> Unit,
-        onTakePhoto: () -> Unit
-    ) {
-
-        IconButton(
-            onClick = onChangeCamera,
-            modifier = Modifier.offset(16.dp, 16.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Cameraswitch,
-                contentDescription = "Switch camera"
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceAround
-        ) {
-            IconButton(onClick = onGalleryClick) {
-                Icon(
-                    imageVector = Icons.Default.Photo,
-                    contentDescription = null
+        remember(cameraLens) {
+            ProcessCameraProvider.getInstance(context)
+                .configureCamera(
+                    previewView = previewView,
+                    lifecycleOwner = lifecycleOwner,
+                    cameraLens = cameraLens,
+                    context = context,
+                    setSourceInfo = { sourceInfo = it },
+                    onFacesDetected = {
+                        detectedFaces = it
+                    },
                 )
-            }
-            IconButton(onClick = onTakePhoto) {
-                Icon(
-                    imageVector = Icons.Default.PhotoCamera,
-                    contentDescription = null
-                )
-            }
         }
 
-    }
-
-    private fun takePhoto(
-        cameraController: LifecycleCameraController,
-        onPhotoTaken: (Bitmap) -> Unit
-    ) {
-        cameraController.takePicture(
-            ContextCompat.getMainExecutor(applicationContext),
-            object : ImageCapture.OnImageCapturedCallback() {
-                override fun onCaptureSuccess(image: ImageProxy) {
-                    super.onCaptureSuccess(image)
-
-                    val matrix = Matrix().apply {
-                        postRotate(image.imageInfo.rotationDegrees.toFloat())
-                    }
-
-                    val rotatedBitmap = Bitmap.createBitmap(
-                        image.toBitmap(),
-                        0,
-                        0,
-                        image.width,
-                        image.height,
-                        matrix,
-                        true
-                    )
-
-                    onPhotoTaken(rotatedBitmap)
-                }
-
-                override fun onError(exception: ImageCaptureException) {
-                    super.onError(exception)
-                    Log.e("MainActivity", "Невозможно сфотографировать: ", exception)
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            with(LocalDensity.current) {
+                Box(
+                    modifier = Modifier
+                        .size(
+                            height = sourceInfo.height.toDp(),
+                            width = sourceInfo.width.toDp()
+                        )
+                        .scale(
+                            calculateScale(
+                                constraints,
+                                sourceInfo,
+                                PreviewScaleType.CENTER_CROP
+                            )
+                        )
+                )
+                {
+                    CameraPreview(previewView)
+                    DetectedFaces(faces = detectedFaces, sourceInfo = sourceInfo)
                 }
             }
-        )
+        }
     }
-
-    private fun switchLens(lens: CameraSelector) = if (lens == CameraSelector.DEFAULT_BACK_CAMERA) {
-        CameraSelector.DEFAULT_FRONT_CAMERA
-    } else CameraSelector.DEFAULT_BACK_CAMERA
 
     private fun permissionGranted(): Boolean {
         return ContextCompat.checkSelfPermission(
@@ -349,152 +179,152 @@ class MainActivity : ComponentActivity() {
 }
 
 
+@Composable
+private fun CameraPreview(previewView: PreviewView) {
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = {
+            previewView.apply {
+                this.scaleType = PreviewView.ScaleType.FILL_CENTER
+                layoutParams = ViewGroup.LayoutParams(
+                    MATCH_PARENT,
+                    MATCH_PARENT
+                )
+                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            }
+
+            previewView
+        })
+}
+
+@Composable
+fun Controls(
+    onLensChange: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = 24.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Button(
+            onClick = onLensChange,
+            modifier = Modifier.wrapContentSize()
+        ) { Icon(Icons.Filled.Cameraswitch, contentDescription = "Switch camera") }
+    }
+}
+
+
 private fun ListenableFuture<ProcessCameraProvider>.configureCamera(
     previewView: PreviewView,
     lifecycleOwner: LifecycleOwner,
-    cameraSelector: Int,
+    cameraLens: Int,
     context: Context,
-    vararg useCases: UseCase?,
-    onBarcodeDetected: (String) -> Unit
+    setSourceInfo: (SourceInfo) -> Unit,
+    onFacesDetected: (List<Face>) -> Unit
 ): ListenableFuture<ProcessCameraProvider> {
-    addListener(
-        {
-            val preview = Builder()
-                .build()
-                .apply {
-                    surfaceProvider = previewView.surfaceProvider
-                }
+    addListener({
+        val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraLens).build()
 
-            val analysis = bindAnalysisUseCase(context, onBarcodeDetected)
-
-            get().apply {
-                unbindAll()
-                bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.Builder().requireLensFacing(cameraSelector).build(),
-                    preview,
-                    *useCases,
-                    analysis
-                )
+        val preview = Builder()
+            .build()
+            .apply {
+                surfaceProvider = previewView.surfaceProvider
             }
 
-        }, ContextCompat.getMainExecutor(context)
-    )
+        val analysis = bindAnalysisUseCase(cameraLens, setSourceInfo, onFacesDetected)
+        try {
+            get().apply {
+                unbindAll()
+                bindToLifecycle(lifecycleOwner, cameraSelector, preview)
+                bindToLifecycle(lifecycleOwner, cameraSelector, analysis)
+            }
+        } catch (exc: Exception) {
+            TODO("process errors")
+        }
+    }, ContextCompat.getMainExecutor(context))
     return this
 }
 
-fun bindAnalysisUseCase(
-    context: Context,
-    onBarcodeDetected: (String) -> Unit
-): ImageAnalysis {
-    val imageAnalysis = ImageAnalysis.Builder()
-        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        .build()
+private fun bindAnalysisUseCase(
+    lens: Int,
+    setSourceInfo: (SourceInfo) -> Unit,
+    onFacesDetected: (List<Face>) -> Unit
+): ImageAnalysis? {
 
-    imageAnalysis.setAnalyzer(
-        ContextCompat.getMainExecutor(context)
-    ) { imageProxy ->
-
-        val image = imageProxy.image
-        if (image != null) {
-
-            val inputImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
-
-            val options = BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
-                .build()
-
-            val scanner = BarcodeScanning.getClient(options)
-
-            scanner.process(inputImage)
-                .addOnSuccessListener { barcodes ->
-                    for (barcode: Barcode in barcodes) {
-                        onBarcodeDetected(barcode.rawValue ?: "No barcode")
-                        Log.d("onBarcodeDetected", "bindAnalysisUseCase: ${barcode.rawValue}")
-                    }
-                }
-                .addOnFailureListener { e ->
-                    Log.e("MainActivity", "Barcode scanning failed: ${e.message}", e)
-                }
-        }
-        imageProxy.close()
+    val imageProcessor = try {
+        FaceDetectorProcessor()
+    } catch (e: Exception) {
+        Log.e("CAMERA", "Can not create image processor", e)
+        return null
     }
+    val builder = ImageAnalysis.Builder()
+    val analysisUseCase = builder.build()
 
-    return imageAnalysis
-}
+    var sourceInfoUpdated = false
 
-@Composable
-fun DetectedBarcodes(
-    barcode: State<Barcode?>
-) {
-    if (barcode.value == null) return
-
-    Canvas(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        drawRect(
-            color = Color.Cyan,
-            style = Stroke(2.dp.toPx()),
-            topLeft = Offset(
-                barcode.value?.boundingBox?.left?.toFloat() ?: 0f,
-                barcode.value?.boundingBox?.top?.toFloat() ?: 0f,
-            ),
-            size = Size(
-                barcode.value?.boundingBox?.width()?.toFloat() ?: 0f,
-                barcode.value?.boundingBox?.height()?.toFloat() ?: 0f
+    analysisUseCase.setAnalyzer(
+        TaskExecutors.MAIN_THREAD
+    ) { imageProxy: ImageProxy ->
+        if (!sourceInfoUpdated) {
+            setSourceInfo(obtainSourceInfo(lens, imageProxy))
+            sourceInfoUpdated = true
+        }
+        try {
+            imageProcessor.processImageProxy(imageProxy, onFacesDetected)
+        } catch (e: MlKitException) {
+            Log.e(
+                "CAMERA", "Failed to process image. Error: " + e.localizedMessage
             )
-        )
+        }
     }
-
+    return analysisUseCase
 }
 
-@Composable
-fun BottomSheetContent(
-    bitmaps: List<Bitmap>,
-    modifier: Modifier = Modifier
-) {
-    if (bitmaps.isEmpty()) {
-        Box(
-            modifier = modifier.padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("Пусто и точка")
-        }
+private fun switchLens(lens: Int) = if (CameraSelector.LENS_FACING_FRONT == lens) {
+    CameraSelector.LENS_FACING_BACK
+} else {
+    CameraSelector.LENS_FACING_FRONT
+}
+
+private fun obtainSourceInfo(lens: Int, imageProxy: ImageProxy): SourceInfo {
+    val isImageFlipped = lens == CameraSelector.LENS_FACING_FRONT
+    val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+    return if (rotationDegrees == 0 || rotationDegrees == 180) {
+        SourceInfo(
+            height = imageProxy.height, width = imageProxy.width, isImageFlipped = isImageFlipped
+        )
     } else {
-        LazyVerticalStaggeredGrid(
-            columns = StaggeredGridCells.Fixed(2),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalItemSpacing = 16.dp,
-            contentPadding = PaddingValues(16.dp),
-            modifier = modifier
-        ) {
-            items(bitmaps) { bitmap ->
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                )
-            }
-        }
-    }
-}
-
-
-@Composable
-fun StartCameraButton(
-    modifier: Modifier = Modifier,
-    onStartCameraClick: () -> Unit
-) {
-    Box(modifier = modifier.fillMaxSize()) {
-        Button(
-            modifier = Modifier.align(Alignment.Center),
-            onClick = onStartCameraClick,
-            content = {
-                Text("Start Camera")
-            }
+        SourceInfo(
+            height = imageProxy.width, width = imageProxy.height, isImageFlipped = isImageFlipped
         )
     }
 }
+
+private fun calculateScale(
+    constraints: Constraints,
+    sourceInfo: SourceInfo,
+    scaleType: PreviewScaleType
+): Float {
+    val heightRatio = constraints.maxHeight.toFloat() / sourceInfo.height
+    val widthRatio = constraints.maxWidth.toFloat() / sourceInfo.width
+    return when (scaleType) {
+        PreviewScaleType.FIT_CENTER -> kotlin.math.min(heightRatio, widthRatio)
+        PreviewScaleType.CENTER_CROP -> kotlin.math.max(heightRatio, widthRatio)
+    }
+}
+
+data class SourceInfo(
+    val width: Int,
+    val height: Int,
+    val isImageFlipped: Boolean,
+)
+
+private enum class PreviewScaleType {
+    FIT_CENTER,
+    CENTER_CROP
+}
+
 
 @Preview(showBackground = true)
 @Composable
